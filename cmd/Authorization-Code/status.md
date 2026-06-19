@@ -42,49 +42,38 @@ Authorization Code Flow is the most secure OAuth 2.0 grant type, designed for se
 
 ## Complete Flow
 
-```
-User Agent          Client App          Auth Server         Resource Server
-   |                     |                     |                     |
-   |-- Visit :8080 ----->|                     |                     |
-   |                     |                     |                     |
-   |-- Click Login ----->|                     |                     |
-   |                     |-- GET /authorize --->|                     |
-   |                     |   ?response_type=code|                     |
-   |                     |   &client_id=xxx     |                     |
-   |                     |   &redirect_uri=yyy  |                     |
-   |                     |   &state=zzz         |                     |
-   |                     |                     |                     |
-   |<--- Login Form -----|                     |                     |
-   |                     |                     |                     |
-   |-- Submit Creds ---->|                     |                     |
-   |   + Approve         |-- POST /authorize -->|                     |
-   |                     |                     |                     |
-   |                     |<-- 302 Redirect -----|                     |
-   |                     |   ?code=abc&state=zzz|                     |
-   |                     |                     |                     |
-   |<-- Redirect to -----|                     |                     |
-   |   /callback         |                     |                     |
-   |                     |                     |                     |
-   |                     |-- POST /token ------>|                     |
-   |                     |   grant_type=        |                     |
-   |                     |   authorization_code |                     |
-   |                     |   &code=abc          |                     |
-   |                     |   &client_id=xxx     |                     |
-   |                     |   &client_secret=yyy |                     |
-   |                     |                     |                     |
-   |                     |<-- access_token -----|                     |
-   |                     |                     |                     |
-   |                     |                     |                     |
-   |                     |-- GET /resource ---->|                     |
-   |                     |   Authorization:     |                     |
-   |                     |   Bearer <token>     |                     |
-   |                     |                     |-- POST /introspect ->|
-   |                     |                     |   token=<token>     |
-   |                     |                     |<-- {active:true} ---|
-   |                     |                     |                     |
-   |                     |<-- {data:...} -------|                     |
-   |                     |                     |                     |
-   |<-- Display Result --|                     |                     |
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Browser as 用户代理 (Browser)
+    participant Client as 客户端服务 (Client App)
+    participant Auth as 授权服务器 (Auth Server)
+    participant Resource as 资源服务器 (Resource Server)
+
+    Browser->>Client: 1. 点击“使用云相册打印”
+    Client->>Browser: 2. 重定向 (302) 到 Auth 授权端点
+    Browser->>Auth: 3. GET /authorize?response_type=code<br/>&client_id=xxx&redirect_uri=yyy&state=zzz
+    Auth->>Browser: 4. 返回 登录 & 授权页面 (HTML)
+    
+    Note over Browser, Auth: ⚠️ 核心安全边界：密码直接在浏览器和授权服务器之间传递
+    Browser->>Auth: 5. 提交 用户名/密码 + 同意授权 (HTTP POST 直接发送)
+    
+    Auth->>Browser: 6. 重定向 (302) 到 Client 回调<br/>携带 ?code=AUTH_CODE&state=zzz
+    Browser->>Client: 7. 请求 /callback?code=AUTH_CODE&state=zzz
+    
+    Note over Client, Auth: 🔒 后端通道 (用户浏览器完全不可见)
+    Client->>Auth: 8. POST /token<br/>grant_type=authorization_code<br/>&code=AUTH_CODE&client_secret=SECRET
+    Auth->>Client: 9. 返回 access_token + refresh_token (JSON)
+    
+    Note over Client, Resource: 🚀 携带令牌访问资源
+    Client->>Resource: 10. GET /photos?file=vacation.jpg<br/>Authorization: Bearer <access_token>
+    
+    Note over Resource, Auth: (可选) 资源服务器校验令牌合法性
+    Resource->>Auth: 11. POST /introspect (携带 access_token)
+    Auth->>Resource: 12. 返回 {active: true, scope: "read"}
+    
+    Resource->>Client: 13. 返回受保护的照片数据
+    Client->>Browser: 14. 显示“打印预览/成功”页面
 ```
 
 ## Key Security Features
@@ -110,3 +99,76 @@ go run ./cmd/Authorization-Code/client/
 ```
 
 Then open http://localhost:8080 in a browser.
+
+## Type Definitions
+
+All shared types are defined in `types/response.go`.
+
+### Authorization Request (RFC 4.1.1)
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `response_type` | `string` | REQUIRED | MUST be `"code"` |
+| `client_id` | `string` | REQUIRED | Client identifier |
+| `redirect_uri` | `string` | OPTIONAL | Redirection URI |
+| `scope` | `string` | OPTIONAL | Requested scope |
+| `state` | `string` | RECOMMENDED | CSRF protection |
+
+### Authorization Response (RFC 4.1.2)
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `code` | `string` | REQUIRED | Authorization code |
+| `state` | `string` | REQUIRED* | Echo back request state |
+
+### Error Response (RFC 4.1.2.1 / 5.2)
+
+Error codes are defined as `ErrorCode` type with constants:
+
+| Constant | Value | Where Used |
+|----------|-------|------------|
+| `ErrorInvalidRequest` | `invalid_request` | Auth / Token |
+| `ErrorUnauthorizedClient` | `unauthorized_client` | Auth |
+| `ErrorAccessDenied` | `access_denied` | Auth |
+| `ErrorUnsupportedResponseType` | `unsupported_response_type` | Auth |
+| `ErrorInvalidScope` | `invalid_scope` | Auth |
+| `ErrorServerError` | `server_error` | Auth / Token |
+| `ErrorTemporarilyUnavailable` | `temporarily_unavailable` | Auth |
+| `ErrorInvalidClient` | `invalid_client` | Token |
+| `ErrorInvalidGrant` | `invalid_grant` | Token |
+| `ErrorUnsupportedGrantType` | `unsupported_grant_type` | Token |
+
+Error response body:
+```json
+{
+  "error": "invalid_grant",
+  "error_description": "authorization code has expired"
+}
+```
+
+### Access Token Request (RFC 4.1.3)
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `grant_type` | `string` | REQUIRED | MUST be `"authorization_code"` |
+| `code` | `string` | REQUIRED | Authorization code |
+| `redirect_uri` | `string` | CONDITIONAL | Required if in auth request |
+| `client_id` | `string` | OPTIONAL | Not needed if using Basic auth |
+
+### Access Token Response (RFC 4.1.4 / 5.1)
+```json
+{
+  "access_token": "2YotnFZFEjr1zCsicMWpAA",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "refresh_token": "tGzv3JOkF0XG5Qx2TlKWIA",
+  "scope": "read"
+}
+```
+
+### Introspect Response
+```json
+{
+  "active": true,
+  "client_id": "oauth-client-1",
+  "username": "demo_user",
+  "exp": 1718000000
+}
+```

@@ -139,7 +139,7 @@ func exchangeCode(code string) (string, error) {
 		return "", fmt.Errorf("token endpoint returned error (HTTP %d): %s", resp.StatusCode, string(body))
 	}
 
-	var tokenResp types.TokenResponse
+	var tokenResp types.AccessTokenResponse
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
 		return "", fmt.Errorf("failed to parse token response: %w", err)
 	}
