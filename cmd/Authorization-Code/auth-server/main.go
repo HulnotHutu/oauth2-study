@@ -45,6 +45,15 @@ type AccessToken struct {
 	ExpiresAt time.Time
 }
 
+// RefreshToken 刷新令牌
+type RefreshToken struct {
+	Token     string
+	ClientID  string
+	Username  string
+	Scope     string
+	ExpiresAt time.Time
+}
+
 // codeRecord 追踪已消费的授权码及签发的令牌（用于重用检测和令牌撤销）
 type codeRecord struct {
 	tokenIDs []string
@@ -67,6 +76,9 @@ var (
 
 	accessTokens   = map[string]AccessToken{}
 	accessTokensMu sync.RWMutex
+
+	refreshTokens   = map[string]RefreshToken{}
+	refreshTokensMu sync.RWMutex
 )
 
 func generateRandomString(length int) (string, error) {
@@ -208,6 +220,11 @@ func handleToken(c *echo.Context) error {
 	c.Response().Header().Set("Pragma", "no-cache")
 
 	grantType := c.FormValue("grant_type")
+
+	if grantType == "refresh_token" {
+		return handleRefreshToken(c)
+	}
+
 	code := c.FormValue("code")
 	redirectURI := c.FormValue("redirect_uri")
 
@@ -294,10 +311,115 @@ func handleToken(c *echo.Context) error {
 	usedCodes[code] = codeRecord{tokenIDs: []string{tokenValue}}
 	usedCodesMu.Unlock()
 
+	// 生成 refresh token
+	refreshTokenValue, err := generateRandomString(32)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: types.ErrorServerError})
+	}
+
+	refreshTokensMu.Lock()
+	refreshTokens[refreshTokenValue] = RefreshToken{
+		Token:     refreshTokenValue,
+		ClientID:  clientID,
+		Username:  username,
+		Scope:     scope,
+		ExpiresAt: time.Now().Add(30 * 24 * time.Hour), // 30 天
+	}
+	refreshTokensMu.Unlock()
+
 	return c.JSON(http.StatusOK, types.AccessTokenResponse{
-		AccessToken: tokenValue,
-		TokenType:   "Bearer",
-		ExpiresIn:   3600,
+		AccessToken:  tokenValue,
+		TokenType:    "Bearer",
+		ExpiresIn:    3600,
+		RefreshToken: refreshTokenValue,
+	})
+}
+
+// handleRefreshToken 处理 refresh_token grant_type 请求（RFC 6）
+func handleRefreshToken(c *echo.Context) error {
+	refreshTokenValue := c.FormValue("refresh_token")
+	scope := c.FormValue("scope")
+
+	clientID, clientSecret, _ := authenticateClient(c)
+
+	client, ok := clients[clientID]
+	if !ok || client.Secret != clientSecret {
+		return c.JSON(http.StatusUnauthorized, types.ErrorResponse{Error: types.ErrorInvalidClient})
+	}
+
+	refreshTokensMu.RLock()
+	rt, ok := refreshTokens[refreshTokenValue]
+	refreshTokensMu.RUnlock()
+
+	if !ok {
+		return c.JSON(http.StatusBadRequest, types.ErrorResponse{
+			Error:            types.ErrorInvalidGrant,
+			ErrorDescription: "refresh token not found",
+		})
+	}
+	if rt.ClientID != clientID {
+		return c.JSON(http.StatusBadRequest, types.ErrorResponse{
+			Error:            types.ErrorInvalidGrant,
+			ErrorDescription: "refresh token was issued for a different client",
+		})
+	}
+	if time.Now().After(rt.ExpiresAt) {
+		// 清理过期 refresh token
+		refreshTokensMu.Lock()
+		delete(refreshTokens, refreshTokenValue)
+		refreshTokensMu.Unlock()
+		return c.JSON(http.StatusBadRequest, types.ErrorResponse{
+			Error:            types.ErrorInvalidGrant,
+			ErrorDescription: "refresh token has expired",
+		})
+	}
+
+	// 如果请求了 scope，验证其不能超过原始授权范围
+	requestedScope := scope
+	if requestedScope == "" {
+		requestedScope = rt.Scope
+	}
+
+	// 生成新的 access token
+	newTokenValue, err := generateRandomString(32)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: types.ErrorServerError})
+	}
+
+	accessTokensMu.Lock()
+	accessTokens[newTokenValue] = AccessToken{
+		Token:     newTokenValue,
+		ClientID:  rt.ClientID,
+		Username:  rt.Username,
+		Scope:     requestedScope,
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+	}
+	accessTokensMu.Unlock()
+
+	// 生成新的 refresh token（令牌轮换，RFC 建议）
+	newRefreshTokenValue, err := generateRandomString(32)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: types.ErrorServerError})
+	}
+
+	refreshTokensMu.Lock()
+	// 删除旧的 refresh token（轮换）
+	delete(refreshTokens, refreshTokenValue)
+	// 签发新的 refresh token
+	refreshTokens[newRefreshTokenValue] = RefreshToken{
+		Token:     newRefreshTokenValue,
+		ClientID:  rt.ClientID,
+		Username:  rt.Username,
+		Scope:     requestedScope,
+		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
+	}
+	refreshTokensMu.Unlock()
+
+	return c.JSON(http.StatusOK, types.AccessTokenResponse{
+		AccessToken:  newTokenValue,
+		TokenType:    "Bearer",
+		ExpiresIn:    3600,
+		RefreshToken: newRefreshTokenValue,
 	})
 }
 

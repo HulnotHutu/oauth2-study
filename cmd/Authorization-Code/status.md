@@ -20,7 +20,7 @@ Authorization Code Flow is the most secure OAuth 2.0 grant type, designed for se
 |--------|------|-------------|
 | `GET` | `/authorize` | Authorization endpoint — shows login form with client info |
 | `POST` | `/authorize` | Processes credentials and consent, redirects with `?code=xxx&state=yyy` |
-| `POST` | `/token` | Token endpoint — exchanges authorization code for access token |
+| `POST` | `/token` | Token endpoint — exchanges authorization code for access token + refresh token; also handles `grant_type=refresh_token` for token refresh |
 | `POST` | `/introspect` | Token introspection — validates token for resource server |
 | `GET` | `/client` | Shows registered client information |
 
@@ -65,15 +65,26 @@ sequenceDiagram
     Client->>Auth: 8. POST /token<br/>grant_type=authorization_code<br/>&code=AUTH_CODE&client_secret=SECRET
     Auth->>Client: 9. 返回 access_token + refresh_token (JSON)
     
-    Note over Client, Resource: 🚀 携带令牌访问资源
+    Note over Client, Resource: 携带令牌访问资源
     Client->>Resource: 10. GET /photos?file=vacation.jpg<br/>Authorization: Bearer <access_token>
     
     Note over Resource, Auth: (可选) 资源服务器校验令牌合法性
     Resource->>Auth: 11. POST /introspect (携带 access_token)
-    Auth->>Resource: 12. 返回 {active: true, scope: "read"}
+    Auth->>Resource: 12. 返回 {active: true, scope: “read”}
     
     Resource->>Client: 13. 返回受保护的照片数据
-    Client->>Browser: 14. 显示“打印预览/成功”页面
+    Client->>Browser: 14. 显示”打印预览/成功”页面
+
+    Note over Client, Resource: Access Token 过期时 - Refresh Token 自动续期
+    Client->>Resource: 15. GET /resource<br/>Authorization: Bearer <expired_token>
+    Resource->>Client: 16. 401 Unauthorized
+
+    Note over Client, Auth: 后端通道刷新令牌
+    Client->>Auth: 17. POST /token<br/>grant_type=refresh_token<br/>&refresh_token=xxx&client_secret=SECRET
+    Auth->>Client: 18. 返回 新的 access_token + 新的 refresh_token (轮换)
+
+    Client->>Resource: 19. GET /resource<br/>Authorization: Bearer <new_access_token>
+    Resource->>Client: 20. 返回受保护资源
 ```
 
 ## Key Security Features
@@ -84,6 +95,9 @@ sequenceDiagram
 4. **Redirect URI validation** — Authorization server validates redirect_uri matches the registered value.
 5. **Access token** — 1-hour expiry, never exposed to the user-agent (obtained via server-to-server call).
 6. **Back-channel token exchange** — Code is exchanged for token through direct server-to-server communication.
+7. **Refresh token** — Long-lived (30 days), used to obtain new access tokens without re-authentication. Never sent to resource servers.
+8. **Refresh token rotation** — Each refresh operation issues a new refresh token and revokes the old one, minimizing the impact of token leakage.
+9. **Auto-refresh on 401** — Client detects expired tokens via 401 response and automatically refreshes before retrying.
 
 ## How to Run
 
@@ -162,6 +176,14 @@ Error response body:
   "scope": "read"
 }
 ```
+
+### Refresh Token Request (RFC 6)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `grant_type` | `string` | REQUIRED | MUST be `"refresh_token"` |
+| `refresh_token` | `string` | REQUIRED | The refresh token issued to the client |
+| `scope` | `string` | OPTIONAL | Requested scope, MUST NOT exceed originally granted scope |
 
 ### Introspect Response
 ```json

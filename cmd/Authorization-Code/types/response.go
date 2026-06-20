@@ -84,7 +84,20 @@ type AccessTokenResponse struct {
 // Introspect Response (Token Validation)
 // ──────────────────────────────────────────────
 
-// IntrospectResponse introspection 端点响应（资源服务器使用）
+// ──────────────────────────────────────────────
+// Refresh Token Request (RFC 6)
+// ──────────────────────────────────────────────
+
+// RefreshTokenRequest 刷新令牌请求参数
+type RefreshTokenRequest struct {
+	GrantType    string `form:"grant_type"`    // REQUIRED. MUST be "refresh_token"
+	RefreshToken string `form:"refresh_token"` // REQUIRED
+	Scope        string `form:"scope"`         // OPTIONAL
+}
+
+// ──────────────────────────────────────────────
+// Introspect Response (Token Validation)
+// ──────────────────────────────────────────────
 type IntrospectResponse struct {
 	Active   bool   `json:"active"`
 	ClientID string `json:"client_id,omitempty"`
