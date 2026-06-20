@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head><title>Debug Info</title></head>
+<body>
+	<h2>OAuth2 Implicit Grant Flow</h2>
+	<h3>Components</h3>
+	<ul>
+		<li><strong>Client Application</strong> - http://localhost:8080 (current)</li>
+		<li><strong>Authorization Server</strong> - http://localhost:8081</li>
+		<li><strong>Resource Server</strong> - http://localhost:8082</li>
+	</ul>
+	<h3>Status</h3>
+	<ul>
+		<li>Access Token: {{.TokenStatus}}</li>
+	</ul>
+	<h3>Flow</h3>
+	<ol>
+		<li>User clicks login → Client redirects to Authorization Server (GET /authorize, response_type=token)</li>
+		<li>User enters credentials and approves → Authorization Server redirects back (302) with access_token in URI fragment</li>
+		<li>Callback page JavaScript extracts token from fragment and stores it on the server</li>
+		<li>Client requests protected resource with token (GET /resource, Authorization: Bearer xxx)</li>
+		<li>Resource Server introspects token (POST /introspect)</li>
+	</ol>
+	<a href="/"><button>Back to Home</button></a>
+</body>
+</html>

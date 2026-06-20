@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Callback - Implicit Grant</title>
+	<script>
+		// 从 URI fragment 中提取 access token (RFC 4.2.2)
+		function extractFragmentParams() {
+			var hash = window.location.hash.substring(1);
+			if (!hash) {
+				document.getElementById('status').innerText = 'No token received in fragment.';
+				return;
+			}
+			var params = {};
+			hash.split('&').forEach(function(pair) {
+				var parts = pair.split('=');
+				params[decodeURIComponent(parts[0])] = decodeURIComponent(parts[1]);
+			});
+			return params;
+		}
+
+		var params = extractFragmentParams();
+		if (params && params.access_token) {
+			// 将 token 发送给服务器存储
+			var xhr = new XMLHttpRequest();
+			xhr.open('POST', '/token-store', true);
+			xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+			xhr.onload = function() {
+				if (xhr.status === 200) {
+					window.location.href = '/resource';
+				}
+			};
+			xhr.send('access_token=' + encodeURIComponent(params.access_token) +
+				'&token_type=' + encodeURIComponent(params.token_type || 'Bearer') +
+				'&expires_in=' + encodeURIComponent(params.expires_in || '3600'));
+		} else if (params && params.error) {
+			document.getElementById('status').innerText = 'Error: ' + params.error +
+				(params.error_description ? ' - ' + params.error_description : '');
+		} else {
+			document.getElementById('status').innerText = 'No access token found in the response.';
+		}
+	</script>
+</head>
+<body>
+	<h2>Processing Authorization Response</h2>
+	<p id="status">Extracting token from fragment...</p>
+	<noscript>JavaScript is required for the Implicit Grant flow.</noscript>
+</body>
+</html>
