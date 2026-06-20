@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head><title>Debug Info</title></head>
+<body>
+	<h2>OAuth2 Client Credentials Grant</h2>
+	<h3>Components</h3>
+	<ul>
+		<li><strong>Client Application</strong> - http://localhost:8080 (current)</li>
+		<li><strong>Authorization Server</strong> - http://localhost:8081</li>
+		<li><strong>Resource Server</strong> - http://localhost:8082</li>
+	</ul>
+	<h3>Status</h3>
+	<ul>
+		<li>Access Token: {{.TokenStatus}}</li>
+		<li>Client ID: {{.ClientID}}</li>
+	</ul>
+	<h3>Flow</h3>
+	<ol>
+		<li>No user interaction required — the client authenticates itself</li>
+		<li>Client sends POST /token with grant_type=client_credentials + Basic Auth header</li>
+		<li>Authorization Server authenticates the client, issues access token (no refresh token)</li>
+		<li>Client uses access token to call Resource Server (GET /resource, Authorization: Bearer xxx)</li>
+		<li>Resource Server introspects token (POST /introspect)</li>
+		<li>When token expires, client requests a new token (no refresh token available)</li>
+	</ol>
+	<a href="/"><button>Back to Home</button></a>
+</body>
+</html>
