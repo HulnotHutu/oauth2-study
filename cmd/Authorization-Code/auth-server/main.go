@@ -59,6 +59,11 @@ type codeRecord struct {
 	tokenIDs []string
 }
 
+// rotatedTokenRecord 记录已轮换的 refresh token 与后续 token 的关系（用于重放检测 4.14.2）
+type rotatedTokenRecord struct {
+	replacedBy string // 替换它的新 refresh token
+}
+
 var (
 	clients = map[string]Client{
 		"oauth-client-1": {
@@ -79,6 +84,9 @@ var (
 
 	refreshTokens   = map[string]RefreshToken{}
 	refreshTokensMu sync.RWMutex
+
+	usedRefreshTokens   = map[string]rotatedTokenRecord{}
+	usedRefreshTokensMu sync.RWMutex
 )
 
 func generateRandomString(length int) (string, error) {
@@ -335,7 +343,7 @@ func handleToken(c *echo.Context) error {
 	})
 }
 
-// handleRefreshToken 处理 refresh_token grant_type 请求（RFC 6）
+// handleRefreshToken 处理 refresh_token grant_type 请求（RFC 6 / 4.14.2）
 func handleRefreshToken(c *echo.Context) error {
 	refreshTokenValue := c.FormValue("refresh_token")
 	scope := c.FormValue("scope")
@@ -352,6 +360,38 @@ func handleRefreshToken(c *echo.Context) error {
 	refreshTokensMu.RUnlock()
 
 	if !ok {
+		// 检查是否为已轮换的 token（重放检测 4.14.2）
+		usedRefreshTokensMu.RLock()
+		used, wasRotated := usedRefreshTokens[refreshTokenValue]
+		usedRefreshTokensMu.RUnlock()
+
+		if wasRotated {
+			// Refresh token 已被轮换过，检测到重放攻击！
+			// 撤销当前活跃的 refresh token 及其关联的 access tokens
+			refreshTokensMu.Lock()
+			activeRT, stillActive := refreshTokens[used.replacedBy]
+			if stillActive {
+				// 查找并撤销该活跃 refresh token 关联的 access tokens
+				var tokensToRevoke []string
+				accessTokensMu.Lock()
+				for k, v := range accessTokens {
+					if v.ClientID == activeRT.ClientID && v.Username == activeRT.Username {
+						tokensToRevoke = append(tokensToRevoke, k)
+					}
+				}
+				for _, tid := range tokensToRevoke {
+					delete(accessTokens, tid)
+				}
+				accessTokensMu.Unlock()
+				delete(refreshTokens, used.replacedBy)
+			}
+			refreshTokensMu.Unlock()
+			return c.JSON(http.StatusBadRequest, types.ErrorResponse{
+				Error:            types.ErrorInvalidGrant,
+				ErrorDescription: "refresh token replay detected; all tokens have been revoked",
+			})
+		}
+
 		return c.JSON(http.StatusBadRequest, types.ErrorResponse{
 			Error:            types.ErrorInvalidGrant,
 			ErrorDescription: "refresh token not found",
@@ -396,14 +436,17 @@ func handleRefreshToken(c *echo.Context) error {
 	}
 	accessTokensMu.Unlock()
 
-	// 生成新的 refresh token（令牌轮换，RFC 建议）
+	// 生成新的 refresh token（令牌轮换 4.14.2）
 	newRefreshTokenValue, err := generateRandomString(32)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: types.ErrorServerError})
 	}
 
 	refreshTokensMu.Lock()
-	// 删除旧的 refresh token（轮换）
+	// 将旧 token 移入已轮换记录（保留关系信息，不删除）
+	usedRefreshTokensMu.Lock()
+	usedRefreshTokens[refreshTokenValue] = rotatedTokenRecord{replacedBy: newRefreshTokenValue}
+	usedRefreshTokensMu.Unlock()
 	delete(refreshTokens, refreshTokenValue)
 	// 签发新的 refresh token
 	refreshTokens[newRefreshTokenValue] = RefreshToken{

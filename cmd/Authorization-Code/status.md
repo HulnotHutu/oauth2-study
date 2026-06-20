@@ -97,7 +97,8 @@ sequenceDiagram
 6. **Back-channel token exchange** — Code is exchanged for token through direct server-to-server communication.
 7. **Refresh token** — Long-lived (30 days), used to obtain new access tokens without re-authentication. Never sent to resource servers.
 8. **Refresh token rotation** — Each refresh operation issues a new refresh token and revokes the old one, minimizing the impact of token leakage.
-9. **Auto-refresh on 401** — Client detects expired tokens via 401 response and automatically refreshes before retrying.
+9. **Replay detection** (4.14.2) — Rotated tokens are tracked rather than deleted. If a compromised token is reused, the server detects the replay, revokes the current active token, and stops the attack.
+10. **Auto-refresh on 401** — Client detects expired tokens via 401 response and automatically refreshes before retrying.
 
 ## How to Run
 
