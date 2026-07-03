@@ -21,6 +21,24 @@ import (
 	"OAuth2/cmd/Authorization-Code-PKCE/types"
 )
 
+// logTransport 包装 http.RoundTripper 记录所有出站请求
+type logTransport struct {
+	rt http.RoundTripper
+}
+
+func (t *logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	slog.Info("-> "+req.Method+" "+req.URL.String(),
+		"headers", fmt.Sprintf("%v", req.Header),
+	)
+	resp, err := t.rt.RoundTrip(req)
+	if err != nil {
+		slog.Error("<- request failed", "error", err)
+	} else {
+		slog.Info("<- "+resp.Status, "status_code", resp.StatusCode)
+	}
+	return resp, err
+}
+
 type githubUser struct {
 	Login         string `json:"login"`
 	AvatarURL     string `json:"avatar_url"`
@@ -83,6 +101,11 @@ func generateCodeVerifier() (string, error) {
 func computeCodeChallenge(verifier string) string {
 	hash := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(hash[:])
+}
+
+func init() {
+	// 挂载日志 transport 到默认 HTTP 客户端，覆盖所有出站请求
+	http.DefaultClient.Transport = &logTransport{rt: http.DefaultTransport}
 }
 
 func main() {
