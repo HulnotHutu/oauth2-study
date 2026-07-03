@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,19 +18,17 @@ import (
 
 	"github.com/labstack/echo/v5"
 
-	"OAuth2/cmd/Authorization-Code/types"
+	"OAuth2/cmd/Authorization-Code-PKCE/types"
 )
 
 var (
-	// stateMap 存储已生成的 state 值，用于 CSRF 防护
 	stateMap = map[string]bool{}
 	stateMu  sync.RWMutex
-	// accessToken 存储获取到的访问令牌
-	accessToken string
-	// refreshToken 存储刷新令牌
+	// codeVerifier 存储当前 PKCE 的 verifier（用于令牌交换时验证）
+	codeVerifier string
+	accessToken  string
 	refreshToken string
-	// expiresAt 记录 access token 过期时间
-	expiresAt time.Time
+	expiresAt    time.Time
 )
 
 func generateState() (string, error) {
@@ -52,11 +52,27 @@ func consumeState(state string) bool {
 	return ok
 }
 
+// generateCodeVerifier 生成 PKCE code_verifier（RFC 7636 Section 4.1）
+// 32 字节随机数 → base64url 编码 → 43 字符（符合 43-128 字符要求）
+func generateCodeVerifier() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// computeCodeChallenge 计算 PKCE code_challenge（S256 方法）
+// code_challenge = BASE64URL-ENCODE(SHA256(ASCII(code_verifier)))
+func computeCodeChallenge(verifier string) string {
+	hash := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(hash[:])
+}
+
 func main() {
 	e := echo.New()
 
-	// 设置模板渲染器
-	viewsDir, _ := filepath.Abs(filepath.Join("cmd", "Authorization-Code", "views"))
+	viewsDir, _ := filepath.Abs(filepath.Join("cmd", "Authorization-Code-PKCE", "views"))
 	e.Renderer = types.NewTemplateRenderer(
 		filepath.Join(viewsDir, "home.html"),
 		filepath.Join(viewsDir, "callback_success.html"),
@@ -80,24 +96,33 @@ func handleHome(c *echo.Context) error {
 	return c.Render(http.StatusOK, "home.html", nil)
 }
 
-// handleLogin 将用户重定向到授权服务器
+// handleLogin 生成 PKCE 参数并发起授权请求
 func handleLogin(c *echo.Context) error {
 	state, err := generateState()
 	if err != nil {
 		return c.String(http.StatusInternalServerError, "internal server error")
 	}
 
+	// 生成 PKCE code_verifier 和 code_challenge（S256）
+	verifier, err := generateCodeVerifier()
+	if err != nil {
+		return c.String(http.StatusInternalServerError, "internal server error")
+	}
+	codeVerifier = verifier // 存储用于后续令牌交换
+	challenge := computeCodeChallenge(verifier)
+
 	authURL := fmt.Sprintf(
-		"http://localhost:8081/authorize?response_type=code&client_id=%s&redirect_uri=%s&state=%s",
+		"http://localhost:8081/authorize?response_type=code&client_id=%s&redirect_uri=%s&state=%s&code_challenge=%s&code_challenge_method=S256",
 		"oauth-client-1",
 		url.QueryEscape("http://localhost:8080/callback"),
 		state,
+		challenge,
 	)
 
 	return c.Redirect(http.StatusFound, authURL)
 }
 
-// handleCallback 处理授权服务器回调，用授权码换取访问令牌
+// handleCallback 处理授权服务器回调，用授权码 + code_verifier 换取访问令牌
 func handleCallback(c *echo.Context) error {
 	code := c.QueryParam("code")
 	state := c.QueryParam("state")
@@ -119,7 +144,7 @@ func handleCallback(c *echo.Context) error {
 	return c.Render(http.StatusOK, "callback_success.html", nil)
 }
 
-// exchangeCode 用授权码向授权服务器换取访问令牌
+// exchangeCode 用授权码 + PKCE code_verifier 向授权服务器换取访问令牌
 func exchangeCode(code string) (string, error) {
 	data := url.Values{
 		"grant_type":    {"authorization_code"},
@@ -127,6 +152,7 @@ func exchangeCode(code string) (string, error) {
 		"redirect_uri":  {"http://localhost:8080/callback"},
 		"client_id":     {"oauth-client-1"},
 		"client_secret": {"oauth-client-secret-1"},
+		"code_verifier": {codeVerifier}, // PKCE
 	}
 
 	resp, err := http.PostForm("http://localhost:8081/token", data)
@@ -153,16 +179,17 @@ func exchangeCode(code string) (string, error) {
 		return "", fmt.Errorf("token response missing access_token")
 	}
 
-	// 存储 refresh token 和过期时间
 	refreshToken = tokenResp.RefreshToken
 	if tokenResp.ExpiresIn > 0 {
 		expiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	}
 
+	// 交换完成后清空 code_verifier（一次性使用）
+	codeVerifier = ""
+
 	return tokenResp.AccessToken, nil
 }
 
-// refreshAccessToken 使用 refresh_token 获取新的访问令牌（RFC 6）
 func refreshAccessToken() error {
 	if refreshToken == "" {
 		return fmt.Errorf("no refresh token available")
@@ -199,10 +226,9 @@ func refreshAccessToken() error {
 		return fmt.Errorf("token response missing access_token")
 	}
 
-	// 更新存储的令牌和过期时间
 	accessToken = tokenResp.AccessToken
 	if tokenResp.RefreshToken != "" {
-		refreshToken = tokenResp.RefreshToken // 轮换后的新 refresh token
+		refreshToken = tokenResp.RefreshToken
 	}
 	if tokenResp.ExpiresIn > 0 {
 		expiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
@@ -211,7 +237,6 @@ func refreshAccessToken() error {
 	return nil
 }
 
-// handleResource 使用访问令牌访问资源服务器
 func handleResource(c *echo.Context) error {
 	if accessToken == "" {
 		return c.Render(http.StatusOK, "no_token.html", nil)
@@ -222,7 +247,6 @@ func handleResource(c *echo.Context) error {
 		return c.String(http.StatusInternalServerError, fmt.Sprintf("failed to request resource: %v", err))
 	}
 
-	// 如果 access token 过期（401），尝试用 refresh token 刷新
 	if statusCode == http.StatusUnauthorized {
 		if err := refreshAccessToken(); err != nil {
 			return c.Render(http.StatusOK, "resource.html", map[string]any{
@@ -231,7 +255,6 @@ func handleResource(c *echo.Context) error {
 			})
 		}
 
-		// 使用新 token 重试
 		body, statusCode, err = callResource()
 		if err != nil {
 			return c.String(http.StatusInternalServerError, fmt.Sprintf("failed to retry resource request: %v", err))
@@ -247,7 +270,6 @@ func handleResource(c *echo.Context) error {
 	})
 }
 
-// callResource 向资源服务器发起请求
 func callResource() ([]byte, int, error) {
 	req, err := http.NewRequest("GET", "http://localhost:8082/resource", nil)
 	if err != nil {
@@ -274,7 +296,6 @@ func handleDebug(c *echo.Context) error {
 	if accessToken != "" {
 		tokenStatus = "obtained (value hidden)"
 	}
-
 	refreshStatus := "not obtained"
 	if refreshToken != "" {
 		refreshStatus = "obtained (value hidden)"

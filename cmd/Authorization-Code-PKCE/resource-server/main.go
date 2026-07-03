@@ -9,7 +9,7 @@ import (
 
 	"github.com/labstack/echo/v5"
 
-	"OAuth2/cmd/Authorization-Code/types"
+	"OAuth2/cmd/Authorization-Code-PKCE/types"
 )
 
 func main() {
@@ -22,7 +22,6 @@ func main() {
 	}
 }
 
-// handleResource 受保护资源端点
 func handleResource(c *echo.Context) error {
 	authHeader := c.Request().Header.Get("Authorization")
 	if authHeader == "" {
@@ -51,17 +50,16 @@ func handleResource(c *echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{
-		"message": "protected resource accessed successfully",
+		"message": "protected resource accessed successfully with PKCE",
 		"data": map[string]string{
 			"username": username,
 			"user_id":  "user_001",
-			"email":    "demo@example.com",
-			"note":     "this resource is protected by OAuth2 authorization code flow",
+			"email":    "pkce@example.com",
+			"note":     "this resource is protected by OAuth2 authorization code flow with PKCE (RFC 7636)",
 		},
 	})
 }
 
-// validateToken 调用授权服务器的 introspection 端点验证令牌
 func validateToken(token string) (bool, string) {
 	resp, err := http.PostForm("http://localhost:8081/introspect", url.Values{"token": {token}})
 	if err != nil {

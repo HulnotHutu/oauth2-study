@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -16,27 +17,27 @@ import (
 
 	"github.com/labstack/echo/v5"
 
-	"OAuth2/cmd/Authorization-Code/types"
+	"OAuth2/cmd/Authorization-Code-PKCE/types"
 )
 
-// Client 注册的客户端信息
 type Client struct {
 	ID           string
 	Secret       string
 	RedirectURIs []string
 }
 
-// AuthorizationCode 一次性授权码
+// AuthorizationCode 包含 PKCE 的 challenge 信息
 type AuthorizationCode struct {
-	Code        string
-	ClientID    string
-	RedirectURI string
-	Username    string
-	Scope       string
-	ExpiresAt   time.Time
+	Code                string
+	ClientID            string
+	RedirectURI         string
+	Username            string
+	Scope               string
+	ExpiresAt           time.Time
+	CodeChallenge       string // PKCE: code_challenge from auth request
+	CodeChallengeMethod string // PKCE: "S256" or "plain"
 }
 
-// AccessToken 访问令牌
 type AccessToken struct {
 	Token     string
 	ClientID  string
@@ -45,7 +46,6 @@ type AccessToken struct {
 	ExpiresAt time.Time
 }
 
-// RefreshToken 刷新令牌
 type RefreshToken struct {
 	Token     string
 	ClientID  string
@@ -54,14 +54,26 @@ type RefreshToken struct {
 	ExpiresAt time.Time
 }
 
-// codeRecord 追踪已消费的授权码及签发的令牌（用于重用检测和令牌撤销）
 type codeRecord struct {
 	tokenIDs []string
 }
 
-// rotatedTokenRecord 记录已轮换的 refresh token 与后续 token 的关系（用于重放检测 4.14.2）
 type rotatedTokenRecord struct {
-	replacedBy string // 替换它的新 refresh token
+	replacedBy string
+}
+
+// verifyPKCE 验证 code_verifier 与存储的 code_challenge 是否匹配（RFC 7636）
+func verifyPKCE(verifier, challenge, method string) bool {
+	switch method {
+	case "S256":
+		hash := sha256.Sum256([]byte(verifier))
+		expected := base64.RawURLEncoding.EncodeToString(hash[:])
+		return expected == challenge
+	case "plain":
+		return verifier == challenge
+	default:
+		return false
+	}
 }
 
 var (
@@ -97,8 +109,6 @@ func generateRandomString(length int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// authenticateClient 从请求中提取并验证客户端凭据
-// 优先使用 Authorization: Basic header，回退到 form 参数
 func authenticateClient(c *echo.Context) (clientID, clientSecret string, ok bool) {
 	auth := c.Request().Header.Get("Authorization")
 	if payloadBase64, ok := strings.CutPrefix(auth, "Basic "); ok {
@@ -113,7 +123,6 @@ func authenticateClient(c *echo.Context) (clientID, clientSecret string, ok bool
 	return c.FormValue("client_id"), c.FormValue("client_secret"), true
 }
 
-// errorRedirect 按照 RFC 4.1.2.1 规范构造错误重定向
 func errorRedirect(c *echo.Context, redirectURI, state string, code types.ErrorCode, desc string) error {
 	loc := fmt.Sprintf("%s?error=%s&error_description=%s", redirectURI,
 		url.QueryEscape(string(code)), url.QueryEscape(desc))
@@ -123,7 +132,6 @@ func errorRedirect(c *echo.Context, redirectURI, state string, code types.ErrorC
 	return c.Redirect(http.StatusFound, loc)
 }
 
-// revokeTokens 撤销指定列表中的所有令牌
 func revokeTokens(tokenIDs []string) {
 	accessTokensMu.Lock()
 	defer accessTokensMu.Unlock()
@@ -135,7 +143,7 @@ func revokeTokens(tokenIDs []string) {
 func main() {
 	e := echo.New()
 
-	viewsDir, _ := filepath.Abs(filepath.Join("cmd", "Authorization-Code", "views"))
+	viewsDir, _ := filepath.Abs(filepath.Join("cmd", "Authorization-Code-PKCE", "views"))
 	e.Renderer = types.NewTemplateRenderer(
 		filepath.Join(viewsDir, "authorize.html"),
 		filepath.Join(viewsDir, "client_info.html"),
@@ -152,18 +160,19 @@ func main() {
 	}
 }
 
-// handleAuthorize 展示用户登录和授权页面（RFC 4.1.1）
+// handleAuthorize 解析 PKCE 参数并展示登录页面
 func handleAuthorize(c *echo.Context) error {
 	clientID := c.QueryParam("client_id")
 	redirectURI := c.QueryParam("redirect_uri")
 	responseType := c.QueryParam("response_type")
 	state := c.QueryParam("state")
+	codeChallenge := c.QueryParam("code_challenge")
+	codeChallengeMethod := c.QueryParam("code_challenge_method")
 
 	client, ok := clients[clientID]
 	if !ok {
 		return c.String(http.StatusBadRequest, fmt.Sprintf("unknown client: %s", clientID))
 	}
-
 	if redirectURI == "" {
 		return c.String(http.StatusBadRequest, "missing redirect_uri")
 	}
@@ -175,15 +184,26 @@ func handleAuthorize(c *echo.Context) error {
 			"response_type must be 'code'")
 	}
 
+	// 验证 PKCE code_challenge_method（RFC 7636 Section 4.4.2）
+	if codeChallenge != "" && codeChallengeMethod == "" {
+		codeChallengeMethod = "plain" // 默认 plain（RFC 7636）
+	}
+	if codeChallengeMethod != "" && codeChallengeMethod != "S256" && codeChallengeMethod != "plain" {
+		return errorRedirect(c, redirectURI, state, types.ErrorInvalidRequest,
+			"unsupported code_challenge_method, must be 'S256' or 'plain'")
+	}
+
 	return c.Render(http.StatusOK, "authorize.html", map[string]string{
-		"ClientID":     clientID,
-		"RedirectURI":  redirectURI,
-		"ResponseType": responseType,
-		"State":        state,
+		"ClientID":            clientID,
+		"RedirectURI":         redirectURI,
+		"ResponseType":        responseType,
+		"State":               state,
+		"CodeChallenge":       codeChallenge,
+		"CodeChallengeMethod": codeChallengeMethod,
 	})
 }
 
-// handleLogin 处理用户登录和授权（RFC 4.1.2 / 4.1.2.1）
+// handleLogin 存储 PKCE challenge 并签发授权码
 func handleLogin(c *echo.Context) error {
 	clientID := c.FormValue("client_id")
 	redirectURI := c.FormValue("redirect_uri")
@@ -191,6 +211,8 @@ func handleLogin(c *echo.Context) error {
 	approve := c.FormValue("approve")
 	username := c.FormValue("username")
 	password := c.FormValue("password")
+	codeChallenge := c.FormValue("code_challenge")
+	codeChallengeMethod := c.FormValue("code_challenge_method")
 
 	if username == "" || password == "" {
 		return errorRedirect(c, redirectURI, state, types.ErrorInvalidRequest,
@@ -209,11 +231,13 @@ func handleLogin(c *echo.Context) error {
 
 	authCodesMu.Lock()
 	authCodes[code] = AuthorizationCode{
-		Code:        code,
-		ClientID:    clientID,
-		RedirectURI: redirectURI,
-		Username:    username,
-		ExpiresAt:   time.Now().Add(10 * time.Minute),
+		Code:                code,
+		ClientID:            clientID,
+		RedirectURI:         redirectURI,
+		Username:            username,
+		ExpiresAt:           time.Now().Add(10 * time.Minute),
+		CodeChallenge:       codeChallenge,
+		CodeChallengeMethod: codeChallengeMethod,
 	}
 	authCodesMu.Unlock()
 
@@ -221,9 +245,8 @@ func handleLogin(c *echo.Context) error {
 	return c.Redirect(http.StatusFound, location)
 }
 
-// handleToken 用授权码换取访问令牌（RFC 4.1.3 / 4.1.4）
+// handleToken 验证 PKCE code_verifier 并签发令牌
 func handleToken(c *echo.Context) error {
-	// 使用标准 response header（RFC 4.1.4）
 	c.Response().Header().Set("Cache-Control", "no-store")
 	c.Response().Header().Set("Pragma", "no-cache")
 
@@ -235,8 +258,8 @@ func handleToken(c *echo.Context) error {
 
 	code := c.FormValue("code")
 	redirectURI := c.FormValue("redirect_uri")
+	codeVerifier := c.FormValue("code_verifier")
 
-	// 客户端认证（RFC 3.2.1）：支持 Basic Auth 和 body 参数两种方式
 	clientID, clientSecret, _ := authenticateClient(c)
 
 	if grantType != "authorization_code" {
@@ -248,13 +271,12 @@ func handleToken(c *echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, types.ErrorResponse{Error: types.ErrorInvalidClient})
 	}
 
-	// 检查授权码重用（RFC 4.1.2：MUST deny reused code, SHOULD revoke tokens）
+	// 检查授权码重用
 	usedCodesMu.RLock()
 	used, wasUsed := usedCodes[code]
 	usedCodesMu.RUnlock()
 
 	if wasUsed {
-		// 撤销此前基于该 code 签发的所有令牌
 		revokeTokens(used.tokenIDs)
 		return c.JSON(http.StatusBadRequest, types.ErrorResponse{
 			Error:            types.ErrorInvalidGrant,
@@ -291,10 +313,27 @@ func handleToken(c *echo.Context) error {
 		})
 	}
 
+	// PKCE code_verifier 验证（RFC 7636 Section 4.6）
+	if authCode.CodeChallenge != "" {
+		// 授权请求携带了 code_challenge → 必须验证 code_verifier（防降级攻击）
+		if codeVerifier == "" {
+			return c.JSON(http.StatusBadRequest, types.ErrorResponse{
+				Error:            types.ErrorInvalidGrant,
+				ErrorDescription: "code_verifier is required (PKCE)",
+			})
+		}
+		if !verifyPKCE(codeVerifier, authCode.CodeChallenge, authCode.CodeChallengeMethod) {
+			return c.JSON(http.StatusBadRequest, types.ErrorResponse{
+				Error:            types.ErrorInvalidGrant,
+				ErrorDescription: "code_verifier verification failed (PKCE)",
+			})
+		}
+	}
+	// 如果授权请求没有 code_challenge，则跳过 PKCE 验证（兼容非 PKCE 客户端）
+
 	username := authCode.Username
 	scope := authCode.Scope
 
-	// 从 authCodes 中删除（防止重复消费）
 	authCodesMu.Lock()
 	delete(authCodes, code)
 	authCodesMu.Unlock()
@@ -314,12 +353,10 @@ func handleToken(c *echo.Context) error {
 	}
 	accessTokensMu.Unlock()
 
-	// 记录 code→token 映射，用于重用检测和令牌撤销
 	usedCodesMu.Lock()
 	usedCodes[code] = codeRecord{tokenIDs: []string{tokenValue}}
 	usedCodesMu.Unlock()
 
-	// 生成 refresh token
 	refreshTokenValue, err := generateRandomString(32)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: types.ErrorServerError})
@@ -331,7 +368,7 @@ func handleToken(c *echo.Context) error {
 		ClientID:  clientID,
 		Username:  username,
 		Scope:     scope,
-		ExpiresAt: time.Now().Add(30 * 24 * time.Hour), // 30 天
+		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
 	}
 	refreshTokensMu.Unlock()
 
@@ -343,7 +380,7 @@ func handleToken(c *echo.Context) error {
 	})
 }
 
-// handleRefreshToken 处理 refresh_token grant_type 请求（RFC 6 / 4.14.2）
+// handleRefreshToken 处理 refresh_token grant_type 请求
 func handleRefreshToken(c *echo.Context) error {
 	refreshTokenValue := c.FormValue("refresh_token")
 	scope := c.FormValue("scope")
@@ -360,18 +397,14 @@ func handleRefreshToken(c *echo.Context) error {
 	refreshTokensMu.RUnlock()
 
 	if !ok {
-		// 检查是否为已轮换的 token（重放检测 4.14.2）
 		usedRefreshTokensMu.RLock()
 		used, wasRotated := usedRefreshTokens[refreshTokenValue]
 		usedRefreshTokensMu.RUnlock()
 
 		if wasRotated {
-			// Refresh token 已被轮换过，检测到重放攻击！
-			// 撤销当前活跃的 refresh token 及其关联的 access tokens
 			refreshTokensMu.Lock()
 			activeRT, stillActive := refreshTokens[used.replacedBy]
 			if stillActive {
-				// 查找并撤销该活跃 refresh token 关联的 access tokens
 				var tokensToRevoke []string
 				accessTokensMu.Lock()
 				for k, v := range accessTokens {
@@ -404,7 +437,6 @@ func handleRefreshToken(c *echo.Context) error {
 		})
 	}
 	if time.Now().After(rt.ExpiresAt) {
-		// 清理过期 refresh token
 		refreshTokensMu.Lock()
 		delete(refreshTokens, refreshTokenValue)
 		refreshTokensMu.Unlock()
@@ -414,13 +446,11 @@ func handleRefreshToken(c *echo.Context) error {
 		})
 	}
 
-	// 如果请求了 scope，验证其不能超过原始授权范围
 	requestedScope := scope
 	if requestedScope == "" {
 		requestedScope = rt.Scope
 	}
 
-	// 生成新的 access token
 	newTokenValue, err := generateRandomString(32)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: types.ErrorServerError})
@@ -436,19 +466,16 @@ func handleRefreshToken(c *echo.Context) error {
 	}
 	accessTokensMu.Unlock()
 
-	// 生成新的 refresh token（令牌轮换 4.14.2）
 	newRefreshTokenValue, err := generateRandomString(32)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, types.ErrorResponse{Error: types.ErrorServerError})
 	}
 
 	refreshTokensMu.Lock()
-	// 将旧 token 移入已轮换记录（保留关系信息，不删除）
 	usedRefreshTokensMu.Lock()
 	usedRefreshTokens[refreshTokenValue] = rotatedTokenRecord{replacedBy: newRefreshTokenValue}
 	usedRefreshTokensMu.Unlock()
 	delete(refreshTokens, refreshTokenValue)
-	// 签发新的 refresh token
 	refreshTokens[newRefreshTokenValue] = RefreshToken{
 		Token:     newRefreshTokenValue,
 		ClientID:  rt.ClientID,
@@ -466,7 +493,6 @@ func handleRefreshToken(c *echo.Context) error {
 	})
 }
 
-// handleIntrospect 令牌 introspection 端点，供资源服务器验证令牌
 func handleIntrospect(c *echo.Context) error {
 	token := c.FormValue("token")
 
@@ -486,7 +512,6 @@ func handleIntrospect(c *echo.Context) error {
 	})
 }
 
-// handleClientInfo 展示已注册客户端信息
 func handleClientInfo(c *echo.Context) error {
 	return c.Render(http.StatusOK, "client_info.html", nil)
 }
