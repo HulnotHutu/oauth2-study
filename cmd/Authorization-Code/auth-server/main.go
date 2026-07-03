@@ -67,17 +67,17 @@ type rotatedTokenRecord struct {
 var (
 	clients = map[string]Client{
 		"oauth-client-1": {
-			ID:     "oauth-client-1",
-			Secret: "oauth-client-secret-1",
+			ID:           "oauth-client-1",
+			Secret:       "oauth-client-secret-1",
 			RedirectURIs: []string{"http://localhost:8080/callback"},
 		},
 	}
 
-	authCodes    = map[string]AuthorizationCode{}
-	authCodesMu  sync.RWMutex
+	authCodes   = map[string]AuthorizationCode{}
+	authCodesMu sync.RWMutex
 
-	usedCodes    = map[string]codeRecord{}
-	usedCodesMu  sync.RWMutex
+	usedCodes   = map[string]codeRecord{}
+	usedCodesMu sync.RWMutex
 
 	accessTokens   = map[string]AccessToken{}
 	accessTokensMu sync.RWMutex
@@ -185,9 +185,11 @@ func handleAuthorize(c *echo.Context) error {
 
 // handleLogin 处理用户登录和授权（RFC 4.1.2 / 4.1.2.1）
 func handleLogin(c *echo.Context) error {
-	clientID := c.FormValue("client_id")
-	redirectURI := c.FormValue("redirect_uri")
-	state := c.FormValue("state")
+	// 明确 OAuth 协议参数只从 Query 取（RFC 4.1.1）
+	clientID := c.QueryParam("client_id")
+	redirectURI := c.QueryParam("redirect_uri")
+	state := c.QueryParam("state")
+
 	approve := c.FormValue("approve")
 	username := c.FormValue("username")
 	password := c.FormValue("password")
