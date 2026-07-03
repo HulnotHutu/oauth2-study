@@ -6,13 +6,13 @@ Resource Owner Password Credentials Grant（密码模式）允许客户端直接
 
 ## 与其他授权模式的关键区别
 
-| 特性 | 授权码模式 | Implicit | ROPC |
-|------|-----------|----------|------|
-| 用户凭据处理 | 用户直接在授权服务器输入 | 用户直接在授权服务器输入 | 凭据**经过客户端**传给授权服务器 |
-| 浏览器重定向 | 需要 | 需要 | **不需要** |
-| `grant_type` | `authorization_code` | 无 `/token` 端点 | `password` |
-| Refresh Token | 可选 | **不支持** | 可选 |
-| 适用场景 | Web 服务器端应用 | 浏览器 SPA | 高度信任的第一方应用 |
+| 特性           | 授权码模式               | Implicit                 | ROPC                                   |
+| -------------- | ------------------------ | ------------------------ | -------------------------------------- |
+| 用户凭据处理   | 用户直接在授权服务器输入 | 用户直接在授权服务器输入 | 凭据**经过客户端**传给授权服务器 |
+| 浏览器重定向   | 需要                     | 需要                     | **不需要**                       |
+| `grant_type` | `authorization_code`   | 无 `/token` 端点       | `password`                           |
+| Refresh Token  | 可选                     | **不支持**         | 可选                                   |
+| 适用场景       | Web 服务器端应用         | 浏览器 SPA               | 高度信任的第一方应用                   |
 
 ## 安全注意事项
 
@@ -23,36 +23,36 @@ Resource Owner Password Credentials Grant（密码模式）允许客户端直接
 
 ## 组件与端口
 
-| 组件 | 端口 | 描述 |
-|------|------|------|
-| Client Application | `:8080` | Client 应用（提供凭据输入表单） |
-| Authorization Server | `:8081` | 验证凭据并签发 access token |
-| Resource Server | `:8082` | 托管受保护资源 |
+| 组件                 | 端口      | 描述                            |
+| -------------------- | --------- | ------------------------------- |
+| Client Application   | `:8080` | Client 应用（提供凭据输入表单） |
+| Authorization Server | `:8081` | 验证凭据并签发 access token     |
+| Resource Server      | `:8082` | 托管受保护资源                  |
 
 ## 端点
 
 ### Authorization Server (`:8081`)
 
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| `POST` | `/token` | 令牌端点 — 处理 `grant_type=password` 和 `grant_type=refresh_token` |
-| `POST` | `/introspect` | Token introspection — 验证令牌有效性 |
+| 方法     | 路径            | 描述                                                                     |
+| -------- | --------------- | ------------------------------------------------------------------------ |
+| `POST` | `/token`      | 令牌端点 — 处理 `grant_type=password` 和 `grant_type=refresh_token` |
+| `POST` | `/introspect` | Token introspection — 验证令牌有效性                                    |
 
 ### Resource Server (`:8082`)
 
-| 方法 | 路径 | 描述 |
-|------|------|------|
+| 方法    | 路径          | 描述                                                 |
+| ------- | ------------- | ---------------------------------------------------- |
 | `GET` | `/resource` | 受保护资源 — 需要 `Authorization: Bearer <token>` |
 
 ### Client Application (`:8080`)
 
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| `GET` | `/` | 首页 |
-| `GET` | `/login` | 凭据输入表单 |
-| `POST` | `/login` | 提交凭据到授权服务器获取 token |
-| `GET` | `/resource` | 使用 access token 获取受保护资源（支持自动刷新） |
-| `GET` | `/debug` | 调试信息 |
+| 方法     | 路径          | 描述                                             |
+| -------- | ------------- | ------------------------------------------------ |
+| `GET`  | `/`         | 首页                                             |
+| `GET`  | `/login`    | 凭据输入表单                                     |
+| `POST` | `/login`    | 提交凭据到授权服务器获取 token                   |
+| `GET`  | `/resource` | 使用 access token 获取受保护资源（支持自动刷新） |
+| `GET`  | `/debug`    | 调试信息                                         |
 
 ## 完整流程
 
@@ -82,10 +82,10 @@ sequenceDiagram
 
 ## 内置用户
 
-| 用户名 | 密码 |
-|--------|------|
+| 用户名    | 密码            |
+| --------- | --------------- |
 | `alice` | `password123` |
-| `bob` | `secret456` |
+| `bob`   | `secret456`   |
 
 ## 如何运行
 
@@ -114,12 +114,12 @@ Authorization: Basic base64(client_id:client_secret)
 grant_type=password&username=johndoe&password=A3ddj3w
 ```
 
-| 参数 | 类型 | 必需 | 描述 |
-|------|------|------|------|
+| 参数           | 类型       | 必需     | 描述                   |
+| -------------- | ---------- | -------- | ---------------------- |
 | `grant_type` | `string` | REQUIRED | MUST be `"password"` |
-| `username` | `string` | REQUIRED | 资源拥有者的用户名 |
-| `password` | `string` | REQUIRED | 资源拥有者的密码 |
-| `scope` | `string` | OPTIONAL | 请求的权限范围 |
+| `username`   | `string` | REQUIRED | 资源拥有者的用户名     |
+| `password`   | `string` | REQUIRED | 资源拥有者的密码       |
+| `scope`      | `string` | OPTIONAL | 请求的权限范围         |
 
 ### Token Response（RFC 4.3.3）
 
